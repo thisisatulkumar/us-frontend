@@ -17,24 +17,30 @@ import { ImPhoneHangUp } from "react-icons/im";
 
 const SIGNALING_SERVER = "https://us-backend-production.up.railway.app/";
 const ICE_SERVERS: RTCIceServer[] = [
-  { urls: "stun:stun.l.google.com:19302" }, // Keep this reliable STUN
-  { urls: "stun:stun1.l.google.com:19302" }, // Add a backup Google STUN
-  {
-    urls: "turn:openrelay.metered.ca:80",
-    username: "openrelayproject",
-    credential: "openrelayproject"
-  },
-  {
-    urls: "turn:openrelay.metered.ca:443",
-    username: "openrelayproject",
-    credential: "openrelayproject"
-  },
-  {
-    urls: "turn:openrelay.metered.ca:443?transport=tcp", // TCP fallback for firewalls
-    username: "openrelayproject",
-    credential: "openrelayproject"
-  }
-];
+      {
+        urls: "stun:stun.relay.metered.ca:80",
+      },
+      {
+        urls: "turn:global.relay.metered.ca:80",
+        username: "c486d08eaed0e8b224aa0a93",
+        credential: "KOsqhw8Rsgbd1t5F",
+      },
+      {
+        urls: "turn:global.relay.metered.ca:80?transport=tcp",
+        username: "c486d08eaed0e8b224aa0a93",
+        credential: "KOsqhw8Rsgbd1t5F",
+      },
+      {
+        urls: "turn:global.relay.metered.ca:443",
+        username: "c486d08eaed0e8b224aa0a93",
+        credential: "KOsqhw8Rsgbd1t5F",
+      },
+      {
+        urls: "turns:global.relay.metered.ca:443?transport=tcp",
+        username: "c486d08eaed0e8b224aa0a93",
+        credential: "KOsqhw8Rsgbd1t5F",
+      },
+  ];
 
 
 type Stroke = { points: { x: number; y: number }[]; color: string; size: number };
