@@ -16,31 +16,34 @@ import {
 } from 'lucide-react';
 import { ImPhoneHangUp } from "react-icons/im";
 
-// Server Config (Aalsi hu isliye nahi use kiya env var... karlo hack)
-const SIGNALING_SERVER = "https://us-backend-production.up.railway.app/";
+// Server Config
+const SIGNALING_SERVER = process.env.NEXT_PUBLIC_SIGNALING_SERVER;
+const TURN_USERNAME = process.env.NEXT_PUBLIC_TURN_USERNAME;
+const TURN_CREDENTIAL = process.env.NEXT_PUBLIC_TURN_CREDENTIAL;
+
 const ICE_SERVERS: RTCIceServer[] = [
     {
         urls: "stun:stun.relay.metered.ca:80",
     },
     {
         urls: "turn:global.relay.metered.ca:80",
-        username: "c486d08eaed0e8b224aa0a93",
-        credential: "KOsqhw8Rsgbd1t5F",
+        username: TURN_USERNAME,
+        credential: TURN_CREDENTIAL,
     },
     {
         urls: "turn:global.relay.metered.ca:80?transport=tcp",
-        username: "c486d08eaed0e8b224aa0a93",
-        credential: "KOsqhw8Rsgbd1t5F",
+        username: TURN_USERNAME,
+        credential: TURN_CREDENTIAL,
     },
     {
         urls: "turn:global.relay.metered.ca:443",
-        username: "c486d08eaed0e8b224aa0a93",
-        credential: "KOsqhw8Rsgbd1t5F",
+        username: TURN_USERNAME,
+        credential: TURN_CREDENTIAL,
     },
     {
         urls: "turns:global.relay.metered.ca:443?transport=tcp",
-        username: "c486d08eaed0e8b224aa0a93",
-        credential: "KOsqhw8Rsgbd1t5F",
+        username: TURN_USERNAME,
+        credential: TURN_CREDENTIAL,
     },
 ];
 
