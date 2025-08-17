@@ -19,6 +19,11 @@ const SIGNALING_SERVER = "https://us-backend-production.up.railway.app/";
 const ICE_SERVERS: RTCIceServer[] = [
   { urls: "stun:stun.l.google.com:19302" },
   {
+    urls: "turn:turn.anyfirewall.com:443?transport=tcp",
+    username: "webrtc",
+    credential: "turnserver"
+  },
+  {
     urls: "turn:numb.viagenie.ca",
     username: "webrtc@live.com", 
     credential: "muazkh"
