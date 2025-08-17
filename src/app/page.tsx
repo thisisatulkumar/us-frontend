@@ -16,11 +16,15 @@ import {
 import { ImPhoneHangUp } from "react-icons/im";
 
 const SIGNALING_SERVER = "https://us-backend-production.up.railway.app/";
-const ICE_SERVERS: RTCIceServer[] = [{ urls: "stun:stun.l.google.com:19302" }, {
+const ICE_SERVERS: RTCIceServer[] = [
+  { urls: "stun:stun.l.google.com:19302" },
+  {
     urls: "turn:numb.viagenie.ca",
-    username: "webrtc@live.com",
+    username: "webrtc@live.com", 
     credential: "muazkh"
-}];
+  }
+];
+
 
 type Stroke = { points: { x: number; y: number }[]; color: string; size: number };
 type ChatMessage = { from: "me" | "peer"; text: string; ts: number };
@@ -60,60 +64,67 @@ export default function Home() {
   const resizeRef = useRef({ resizing: false, startX: 0, startY: 0, startW: 0, startH: 0 });
 
   useEffect(() => {
-    const socket = io(SIGNALING_SERVER);
-    socketRef.current = socket;
+  const socket = io(SIGNALING_SERVER);
+  socketRef.current = socket;
 
-    // someone already in room
-    socket.on("other-user", (id: string) => {
-      targetSocketRef.current = id;
-      if (!pcRef.current) createPeer(true, id); // initiator
-    });
+  // Join room handling
+  socket.on("other-user", (id: string) => {
+    console.log("Other user in room:", id);
+    targetSocketRef.current = id;
+    if (!pcRef.current) createPeer(true, id);
+  });
 
-    socket.on("offer", async (p: any) => {
-      targetSocketRef.current = p.caller;
-      if (!pcRef.current) await createPeer(false, p.caller);
-      if (pcRef.current) {
-        await pcRef.current.setRemoteDescription(new RTCSessionDescription(p.sdp));
+  socket.on("offer", async (data: any) => {
+    console.log("Received offer from", data.caller);
+    targetSocketRef.current = data.caller;
+    if (!pcRef.current) await createPeer(false, data.caller);
 
-        // flush ICE candidates that arrived early
-        for (const c of bufferedIceRef.current) await pcRef.current.addIceCandidate(new RTCIceCandidate(c));
-        bufferedIceRef.current = [];
-
-        const ans = await pcRef.current.createAnswer();
-        await pcRef.current.setLocalDescription(ans);
-        socket.emit("answer", { target: p.caller, sdp: pcRef.current.localDescription });
-      }
-    });
-
-    socket.on("answer", async (p: any) => {
-      if (p.sdp && pcRef.current) {
-        await pcRef.current.setRemoteDescription(new RTCSessionDescription(p.sdp));
-        for (const c of bufferedIceRef.current) await pcRef.current.addIceCandidate(new RTCIceCandidate(c));
-        bufferedIceRef.current = [];
-      }
-    });
-
-    socket.on("ice-candidate", async (p: any) => {
-      if (!p.candidate) return;
-      if (pcRef.current) await pcRef.current.addIceCandidate(new RTCIceCandidate(p.candidate));
-      else bufferedIceRef.current.push(p.candidate);
-    });
-
-    // Chat & whiteboard
-    socket.on("chat-message", ({ text, ts }) => pushChat({ from: "peer", text, ts: ts || Date.now() }));
-    socket.on("wb-draw", ({ stroke }) => drawStroke(stroke as Stroke));
-    socket.on("wb-clear", () => clearCanvas());
-
-    // --- Listen for remote hang-up ---
-    socket.on("hang-up", () => {
-      stopEverything();
-      alert("Peer has hung up");
-    });
-
-    return () => {
-      socket.disconnect();
+    if (pcRef.current) {
+      await pcRef.current.setRemoteDescription(new RTCSessionDescription(data.sdp));
+      flushBufferedIce();
+      const answer = await pcRef.current.createAnswer();
+      await pcRef.current.setLocalDescription(answer);
+      socket.emit("answer", { target: data.caller, sdp: pcRef.current.localDescription });
     }
-  }, []);
+  });
+
+  socket.on("answer", async (data: any) => {
+    console.log("Received answer");
+    if (pcRef.current && data.sdp) {
+      await pcRef.current.setRemoteDescription(new RTCSessionDescription(data.sdp));
+      flushBufferedIce();
+    }
+  });
+
+  socket.on("ice-candidate", async (data: any) => {
+    if (!data.candidate) return;
+    if (pcRef.current) {
+      try { await pcRef.current.addIceCandidate(new RTCIceCandidate(data.candidate)); }
+      catch(e){ console.warn("Failed adding ICE candidate", e); }
+    } else {
+      bufferedIceRef.current.push(data.candidate);
+    }
+  });
+
+  socket.on("hang-up", () => {
+    console.log("Peer hung up");
+    stopEverything();
+    alert("Peer has hung up");
+  });
+
+  return () => { socket.disconnect(); }
+}, []);
+
+// Flush any buffered ICE candidates
+async function flushBufferedIce() {
+  if (!pcRef.current) return;
+  for (const c of bufferedIceRef.current) {
+    try { await pcRef.current.addIceCandidate(new RTCIceCandidate(c)); }
+    catch(e){ console.warn("Failed adding buffered ICE candidate", e); }
+  }
+  bufferedIceRef.current = [];
+}
+
 
   function pushChat(m: ChatMessage) {
     setChatLog(prev => {
@@ -133,35 +144,49 @@ export default function Home() {
     return s;
   }
 
-  async function createPeer(initiator: boolean, otherId: string) {
-    const pc = new RTCPeerConnection({ iceServers: ICE_SERVERS });
-    pcRef.current = pc;
-
-    const local = await ensureLocalAV();
-    local.getTracks().forEach(t => pc.addTrack(t, local));
-
-    pc.ontrack = (e) => {
-      if (remoteVideoRef.current) remoteVideoRef.current.srcObject = e.streams[0];
-    };
-
-    pc.onicecandidate = (e) => {
-      if (e.candidate && targetSocketRef.current) {
-        socketRef.current?.emit("ice-candidate", { target: targetSocketRef.current, candidate: e.candidate });
-      }
-    };
-
-    // Flush any ICE candidates that arrived early
-    for (const c of bufferedIceRef.current) await pc.addIceCandidate(new RTCIceCandidate(c));
-    bufferedIceRef.current = [];
-
-    if (initiator) {
-      const offer = await pc.createOffer();
-      await pc.setLocalDescription(offer);
-      socketRef.current?.emit("offer", { target: otherId, sdp: pc.localDescription, caller: socketRef.current.id });
-    }
-
-    setJoined(true);
+  // Create or reuse peer connection
+async function createPeer(initiator: boolean, otherId: string) {
+  if (pcRef.current) {
+    console.log("Reusing existing peer connection");
+  } else {
+    console.log("Creating new peer connection");
+    pcRef.current = new RTCPeerConnection({ iceServers: ICE_SERVERS });
   }
+
+  const pc = pcRef.current;
+
+  // Local stream
+  const local = await ensureLocalAV();
+  local.getTracks().forEach(track => pc.addTrack(track, local));
+
+  // Remote track handling
+  pc.ontrack = (e) => {
+    if (remoteVideoRef.current) remoteVideoRef.current.srcObject = e.streams[0];
+  };
+
+  // ICE candidate handling
+  pc.onicecandidate = (e) => {
+    console.log("ICE candidate generated:", e.candidate);
+    if (e.candidate && targetSocketRef.current) {
+      socketRef.current?.emit("ice-candidate", { target: targetSocketRef.current, candidate: e.candidate });
+    }
+  };
+
+  pc.oniceconnectionstatechange = () => {
+    console.log("ICE state:", pc.iceConnectionState);
+  };
+
+  // Flush buffered ICE if any
+  flushBufferedIce();
+
+  if (initiator) {
+    const offer = await pc.createOffer();
+    await pc.setLocalDescription(offer);
+    socketRef.current?.emit("offer", { target: otherId, sdp: pc.localDescription, caller: socketRef.current.id });
+  }
+
+  setJoined(true);
+}
 
   function join() {
     if (!roomId.trim() || !password.trim()) return alert("room+password required");
