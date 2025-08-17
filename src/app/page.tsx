@@ -80,29 +80,27 @@ export default function Home() {
     socket.on("wb-clear", () => clearCanvas());
 
     // Peer side: only remove remote stream, keep own AV running
-socket.on("peer-hang-up", () => {
-  // Remove only remote video from peer
-  if (remoteVideoRef.current) remoteVideoRef.current.srcObject = null;
+    socket.on("peer-hang-up", () => {
+    // Remove only remote video from peer
+    if (remoteVideoRef.current) remoteVideoRef.current.srcObject = null;
 
-  // Close peer connection if it exists
-  if (pcRef.current) {
-    pcRef.current.getSenders().forEach(s => {
-      if (s.track && s.track !== localStreamRef.current?.getAudioTracks()[0] &&
-          s.track !== localStreamRef.current?.getVideoTracks()[0]) {
-        s.track.stop();
-      }
+    // Close peer connection if it exists
+    if (pcRef.current) {
+        pcRef.current.getSenders().forEach(s => {
+        if (s.track && s.track !== localStreamRef.current?.getAudioTracks()[0] &&
+            s.track !== localStreamRef.current?.getVideoTracks()[0]) {
+            s.track.stop();
+        }
+        });
+        pcRef.current.close();
+        pcRef.current = null;
+        targetSocketRef.current = null;
+    }
+
+    // Keep peer’s own local stream running
+    setSharing(false);
+    // Do NOT change setJoined; sidebar state stays as it is
     });
-    pcRef.current.close();
-    pcRef.current = null;
-    targetSocketRef.current = null;
-  }
-
-  // Keep peer’s own local stream running
-  setSharing(false);
-  // Do NOT change setJoined; sidebar state stays as it is
-});
-
-
 
     const saved = localStorage.getItem("wb-autosave");
     if (saved) {
@@ -110,7 +108,9 @@ socket.on("peer-hang-up", () => {
       strokes.forEach(drawStroke);
     }
 
-    return () => socket.disconnect();
+    return () => {
+        socket.disconnect();
+    }
   }, []);
 
   function pushChat(m: ChatMessage) {
