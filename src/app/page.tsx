@@ -15,7 +15,7 @@ import {
 } from 'lucide-react';
 import { ImPhoneHangUp } from "react-icons/im";
 
-const SIGNALING_SERVER = "http://localhost:5000";
+const SIGNALING_SERVER = "https://us-backend-production.up.railway.app/";
 const ICE_SERVERS: RTCIceServer[] = [{ urls: "stun:stun.l.google.com:19302" }];
 
 type Stroke = { points: { x: number; y: number }[]; color: string; size: number };
