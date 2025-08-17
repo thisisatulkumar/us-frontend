@@ -84,6 +84,25 @@ export default function Home() {
   const socket = io(SIGNALING_SERVER);
   socketRef.current = socket;
 
+  // Receive and draw remote stroke
+socket.on("wb-draw", (data: { stroke: Stroke }) => {
+  drawStroke(data.stroke);
+  // Also save to autosave for persistence
+  const saved = localStorage.getItem("wb-autosave");
+  const strokes: Stroke[] = saved ? JSON.parse(saved) : [];
+  strokes.push(data.stroke);
+  localStorage.setItem("wb-autosave", JSON.stringify(strokes));
+});
+
+// Receive and handle remote clear
+socket.on("wb-clear", () => {
+  const c = canvasRef.current;
+  if (c) {
+    c.getContext("2d")!.clearRect(0, 0, c.width, c.height);
+  }
+  localStorage.removeItem("wb-autosave");
+});
+
   // --- Add this inside your existing useEffect where socket is defined ---
 socket.on("chat-message", (data: { text: string; ts: number }) => {
     setChatLog(prev => [...prev, { from: "peer", text: data.text, ts: data.ts }]);
@@ -140,6 +159,16 @@ socket.on("chat-message", (data: { text: string; ts: number }) => {
 
   return () => { socket.disconnect(); }
 }, []);
+
+useEffect(() => {
+  if (wbOpen && canvasRef.current) {
+    const saved = localStorage.getItem("wb-autosave");
+    if (saved) {
+      const strokes: Stroke[] = JSON.parse(saved);
+      strokes.forEach(stroke => drawStroke(stroke));
+    }
+  }
+}, [wbOpen]);
 
 // Flush any buffered ICE candidates
 async function flushBufferedIce() {
@@ -485,6 +514,13 @@ async function createPeer(initiator: boolean, otherId: string) {
             onMouseDown={startDragWB}
             >
             <span className="font-bold text-gray-200">Whiteboard</span>
+
+            <button
+            onClick={clearCanvas}
+            className="text-gray-300 hover:text-white transition"
+            >
+            Clear
+            </button>
             
             {/* Slightly bigger close button */}
             <button
