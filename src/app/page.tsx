@@ -16,7 +16,11 @@ import {
 import { ImPhoneHangUp } from "react-icons/im";
 
 const SIGNALING_SERVER = "https://us-backend-production.up.railway.app/";
-const ICE_SERVERS: RTCIceServer[] = [{ urls: "stun:stun.l.google.com:19302" }];
+const ICE_SERVERS: RTCIceServer[] = [{ urls: "stun:stun.l.google.com:19302" }, {
+    urls: "turn:numb.viagenie.ca",
+    username: "webrtc@live.com",
+    credential: "muazkh"
+}];
 
 type Stroke = { points: { x: number; y: number }[]; color: string; size: number };
 type ChatMessage = { from: "me" | "peer"; text: string; ts: number };
