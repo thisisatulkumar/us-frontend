@@ -1,353 +1,348 @@
-'use client';
+"use client";
 
-import { useState, useEffect, useRef } from 'react';
-
-import { io, Socket } from 'socket.io-client';
+import { useEffect, useRef, useState } from "react";
+import { io, Socket } from "socket.io-client";
 
 import {
     Mic,
     MicOff,
     Video,
     VideoOff,
-    LayoutGrid,
-    MessageSquare,
+    ScreenShare,
+    ScreenShareOff,
+    SquareX,
     Presentation
 } from 'lucide-react';
 import { ImPhoneHangUp } from "react-icons/im";
 
-const SIGNALING_SERVER = 'http://localhost:5000';
-const STUN_SERVERS = [
-    {
-        urls: 'stun:stun.l.google.com:19302'
-    }
-];
+const SIGNALING_SERVER = "http://localhost:5000";
+const ICE_SERVERS: RTCIceServer[] = [{ urls: "stun:stun.l.google.com:19302" }];
 
-const displayTime = () => {
-    const date = new Date();
-
-    const hours = date.getHours();
-    let minutes:string | number = date.getMinutes();
-
-    if (minutes < 10) {
-        minutes = `0${minutes}`;
-    }
-
-    if (hours > 12) {
-        return `${hours - 12}:${minutes} PM`;
-    }
-    return `${hours}:${minutes} AM`;
-}
+type Stroke = { points: { x: number; y: number }[]; color: string; size: number };
+type ChatMessage = { from: "me" | "peer"; text: string; ts: number };
 
 export default function Home() {
-    const [roomId, setRoomId] = useState<string>('');
-    const [joined, setJoined] = useState<boolean>(false);
-    const [status, setStatus] = useState<string>('idle');
-    const [audioEnabled, setAudioEnabled] = useState<boolean>(true);
-    const [videoEnabled, setVideoEnabled] = useState<boolean>(true);
-    
-    const socketRef = useRef<Socket | null>(null);
-    const targetSocketRef = useRef<string | null>(null);
-    const bufferedIceRef = useRef<RTCIceCandidateInit[]>([]);
+  const [roomId, setRoomId] = useState("");
+  const [password, setPassword] = useState("");
+  const [joined, setJoined] = useState(false);
+  const [audioEnabled, setAudioEnabled] = useState(true);
+  const [videoEnabled, setVideoEnabled] = useState(true);
+  const [sharing, setSharing] = useState(false);
+  const [wbOpen, setWbOpen] = useState(false);
+  const [chatInput, setChatInput] = useState("");
+  const [chatLog, setChatLog] = useState<ChatMessage[]>([]);
 
-    const pcRef = useRef<RTCPeerConnection | null>(null);
+  const [wbTool, setWbTool] = useState<"pen" | "eraser">("pen");
+  const [wbColor, setWbColor] = useState("#cfd8dc");
+  const [wbSize, setWbSize] = useState(3);
+  const [wbPosition, setWbPosition] = useState({ x: 100, y: 100 });
+  const [wbSizeBox, setWbSizeBox] = useState({ width: 800, height: 600 });
 
-    const localStreamRef = useRef<MediaStream | null>(null);
-    const localVideoRef = useRef<HTMLVideoElement | null>(null);
-    const remoteVideoRef = useRef<HTMLVideoElement | null>(null);
+  const socketRef = useRef<Socket | null>(null);
+  const pcRef = useRef<RTCPeerConnection | null>(null);
+  const localStreamRef = useRef<MediaStream | null>(null);
+  const screenStreamRef = useRef<MediaStream | null>(null);
+  const targetSocketRef = useRef<string | null>(null);
+  const bufferedIceRef = useRef<RTCIceCandidateInit[]>([]);
 
-    useEffect(() => {
-        socketRef.current = io(SIGNALING_SERVER);
-        const socket = socketRef.current;
+  const localVideoRef = useRef<HTMLVideoElement>(null);
+  const remoteVideoRef = useRef<HTMLVideoElement>(null);
+  const canvasRef = useRef<HTMLCanvasElement>(null);
+  const drawingRef = useRef(false);
+  const strokeRef = useRef<Stroke | null>(null);
 
-        socket.on('connect', () => {
-            console.log('Connected to the signaling server', socket.id);
+  const chatContainerRef = useRef<HTMLDivElement>(null);
+  const dragRef = useRef({ dragging: false, offsetX: 0, offsetY: 0 });
+  const resizeRef = useRef({ resizing: false, startX: 0, startY: 0, startW: 0, startH: 0 });
+
+  useEffect(() => {
+    const socket = io(SIGNALING_SERVER);
+    socketRef.current = socket;
+
+    socket.on("other-user", (id: string) => { targetSocketRef.current = id; createPeer(true, id); });
+    socket.on("offer", async (p: any) => {
+      targetSocketRef.current = p.caller;
+      if (!pcRef.current) await createPeer(false, p.caller);
+      await pcRef.current!.setRemoteDescription(new RTCSessionDescription(p.sdp));
+      const ans = await pcRef.current!.createAnswer();
+      await pcRef.current!.setLocalDescription(ans);
+      socket.emit("answer", { target: p.caller, sdp: pcRef.current!.localDescription });
+    });
+    socket.on("answer", async (p: any) => { if (p.sdp && pcRef.current) await pcRef.current.setRemoteDescription(new RTCSessionDescription(p.sdp)); });
+    socket.on("ice-candidate", async (p: any) => {
+      if (!p.candidate) return;
+      if (pcRef.current) await pcRef.current.addIceCandidate(new RTCIceCandidate(p.candidate));
+      else bufferedIceRef.current.push(p.candidate);
+    });
+
+    socket.on("chat-message", ({ text, ts }) => pushChat({ from: "peer", text, ts: ts || Date.now() }));
+    socket.on("wb-draw", ({ stroke }) => drawStroke(stroke as Stroke));
+    socket.on("wb-clear", () => clearCanvas());
+
+    socket.on("peer-hang-up", () => {
+      if (pcRef.current) {
+        pcRef.current.getSenders().forEach(s => {
+          if (s.track?.kind !== "audio" && s.track?.kind !== "video") return;
+          if (s.track) s.track.stop();
         });
+        pcRef.current.close();
+      }
+      pcRef.current = null;
+      targetSocketRef.current = null;
 
-        socket.on('other-user', otherSocketId => {
-            console.log('Other user in the house: ', otherSocketId)
+      if (localVideoRef.current && localStreamRef.current) {
+        localVideoRef.current.srcObject = localStreamRef.current;
+      }
+      if (remoteVideoRef.current) {
+        remoteVideoRef.current.srcObject = null;
+      }
+    });
 
-            targetSocketRef.current = otherSocketId;
-
-            createPeer(true, otherSocketId);
-        });
-
-        socket.on('offer', async payload => {
-            if (!payload.caller || !payload.sdp) return;
-
-            targetSocketRef.current = payload.caller;
-
-            if (!pcRef.current) {
-                await createPeer(false, payload.caller);
-            }
-
-            await pcRef.current!.setRemoteDescription(new RTCSessionDescription(payload.sdp));
-
-            const answer = await pcRef.current!.createAnswer();
-            await pcRef.current!.setLocalDescription(answer);
-
-            socket.emit('answer', {
-                target: payload.caller,
-                sdp: pcRef.current!.localDescription
-            });
-        });
-
-        socket.on('answer', async payload => {
-            if (!payload.sdp) return;
-            if (!pcRef.current) return;
-
-            await pcRef.current.setRemoteDescription(new RTCSessionDescription(payload.sdp));
-        });
-
-        socket.on('ice-candidate', async payload => {
-            if (!payload.candidate) return;
-            if (pcRef.current) {
-                await pcRef.current.addIceCandidate(new RTCIceCandidate(payload.candidate));
-            } else {
-                bufferedIceRef.current.push(payload.candidate);
-            }
-        });
-
-        return () => {
-            socket.disconnect();
-        };
-    }, []);
-    
-    // Get local camera + mic stream
-    const ensureLocalStream = async () => {
-        if (localStreamRef.current) return localStreamRef.current;
-
-        try {
-            const stream = await navigator.mediaDevices.getUserMedia({
-                audio: true,
-                video: true
-            });
-
-            localStreamRef.current = stream;
-
-            if (localVideoRef.current) {
-                localVideoRef.current.srcObject = stream;
-                localVideoRef.current.muted = false;
-            }
-
-            return stream;
-        } catch (err) {
-            console.log("getUserMedia error: ", err);
-            alert('Access diyo bhaiya');
-
-            throw err;
-        }
-    }  
-
-    const muteUnmuteAudio = () => {
-        if (!localStreamRef.current) return;
-
-        const audioTrack = localStreamRef.current.getAudioTracks()[0];
-        if (audioTrack) {
-            audioTrack.enabled = !audioTrack.enabled;
-
-            setAudioEnabled(audioTrack.enabled);
-        }
+    const saved = localStorage.getItem("wb-autosave");
+    if (saved) {
+      const strokes: Stroke[] = JSON.parse(saved);
+      strokes.forEach(drawStroke);
     }
 
-    const showHideVideo = () => {
-        if (!localStreamRef.current) return;
+    return () => socket.disconnect();
+  }, []);
 
-        const videoTrack = localStreamRef.current.getVideoTracks()[0];
-        if (videoTrack) {
-            videoTrack.enabled = !videoTrack.enabled;
-            
-            setVideoEnabled(videoTrack.enabled);
-        }
+  function pushChat(m: ChatMessage) {
+    setChatLog(prev => {
+      const updated = [...prev, m];
+      setTimeout(() => {
+        chatContainerRef.current?.scrollTo({ top: chatContainerRef.current.scrollHeight, behavior: "smooth" });
+      }, 50);
+      return updated;
+    });
+  }
+
+  async function ensureLocalAV() {
+    if (localStreamRef.current) return localStreamRef.current;
+    const s = await navigator.mediaDevices.getUserMedia({ video: true, audio: true });
+    localStreamRef.current = s;
+    if (localVideoRef.current) { localVideoRef.current.srcObject = s; localVideoRef.current.muted = true; }
+    return s;
+  }
+
+  async function createPeer(initiator: boolean, otherId: string) {
+    const pc = new RTCPeerConnection({ iceServers: ICE_SERVERS });
+    pcRef.current = pc;
+
+    const local = await ensureLocalAV();
+    local.getTracks().forEach(t => pc.addTrack(t, local));
+
+    pc.ontrack = (e) => { if (remoteVideoRef.current) remoteVideoRef.current.srcObject = e.streams[0]; };
+    pc.onicecandidate = (e) => { if (e.candidate && targetSocketRef.current) socketRef.current?.emit("ice-candidate", { target: targetSocketRef.current, candidate: e.candidate }); };
+
+    for (const c of bufferedIceRef.current) await pc.addIceCandidate(new RTCIceCandidate(c));
+    bufferedIceRef.current = [];
+
+    if (initiator) {
+      const offer = await pc.createOffer(); await pc.setLocalDescription(offer);
+      socketRef.current?.emit("offer", { target: otherId, sdp: pc.localDescription, caller: socketRef.current.id });
     }
+    setJoined(true);
+  }
 
-    const hangUpCall = () => {
-        if (pcRef.current){
-            pcRef.current.close();
-            pcRef.current = null;
-        }
+  function join() {
+    if (!roomId.trim() || !password.trim()) return alert("room+password required");
+    socketRef.current?.emit("join-room", { roomId: roomId.trim(), password: password.trim() });
+    setJoined(true);
+    ensureLocalAV();
+  }
 
-        if (localStreamRef.current) {
-            localStreamRef.current.getTracks().forEach(track => track.stop());
-            localStreamRef.current = null;
-        }
+  function toggleAudio() {
+    const audioTrack = localStreamRef.current?.getAudioTracks()[0];
+    if (!audioTrack) return;
+    audioTrack.enabled = !audioTrack.enabled;
+    setAudioEnabled(audioTrack.enabled);
+  }
 
-        if (remoteVideoRef.current) {
-            remoteVideoRef.current.srcObject = null;
-        }
+  function toggleVideo() {
+    const videoTrack = localStreamRef.current?.getVideoTracks()[0];
+    if (!videoTrack) return;
+    videoTrack.enabled = !videoTrack.enabled;
+    setVideoEnabled(videoTrack.enabled);
+  }
 
-        if (localVideoRef.current) {
-            localVideoRef.current.srcObject = null;
-        }
+  async function toggleShare() {
+    if (!pcRef.current) return;
+    if (sharing) { await revertToCam(); setSharing(false); return; }
+    try {
+      const screen = await navigator.mediaDevices.getDisplayMedia({
+        video: true,
+        audio: { echoCancellation: true }
+      });
 
-        setJoined(false);
-        setStatus('call ended');
-        setVideoEnabled(false);
-        setAudioEnabled(false);
+      screenStreamRef.current = screen;
+      const screenTrack = screen.getVideoTracks()[0];
 
-        targetSocketRef.current = null;
+      const sender = pcRef.current.getSenders().find(s => s.track?.kind === "video");
+      if (sender) await sender.replaceTrack(screenTrack);
+
+      const audioTrack = screen.getAudioTracks()[0];
+      if (audioTrack) {
+        const audioSender = pcRef.current.getSenders().find(s => s.track?.kind === "audio");
+        if (audioSender) await audioSender.replaceTrack(audioTrack);
+      }
+
+      if (localVideoRef.current) localVideoRef.current.srcObject = screen;
+
+      screenTrack.onended = async () => { await revertToCam(); setSharing(false); };
+      setSharing(true);
+
+    } catch (err) {
+      console.error(err);
+      alert("Screen share failed: audio might not be supported on this browser");
     }
+  }
 
-    const createPeer = async (isInitiator: boolean, otherSocketId: string) => {
-        setStatus('creating-peer');
+  async function revertToCam() {
+    if (!pcRef.current) return;
+    const camStream = await ensureLocalAV();
+    const camTrack = camStream.getVideoTracks()[0];
+    const sender = pcRef.current.getSenders().find(s => s.track?.kind === "video");
+    if (sender) await sender.replaceTrack(camTrack);
+    if (localVideoRef.current) localVideoRef.current.srcObject = camStream;
+  }
 
-        const pc = new RTCPeerConnection({
-            iceServers: STUN_SERVERS
-        });
-        pcRef.current = pc;
+  function sendChat() { 
+    if (!chatInput.trim()) return; 
+    const text = chatInput.trim(); 
+    pushChat({ from: "me", text, ts: Date.now() }); 
+    socketRef.current?.emit("chat-message", { roomId, text, ts: Date.now() }); 
+    setChatInput(""); 
+  }
 
-        const localStream = await ensureLocalStream();
-        localStream.getTracks().forEach(track => pc.addTrack(track, localStream));
+  function startDraw(e: any) {
+    drawingRef.current = true;
+    strokeRef.current = {
+      points: [{ x: e.nativeEvent.offsetX, y: e.nativeEvent.offsetY }],
+      color: wbTool === "pen" ? wbColor : "#ffffff",
+      size: wbSize
+    };
+  }
+  function moveDraw(e: any) {
+    if (!drawingRef.current || !strokeRef.current) return;
+    strokeRef.current.points.push({ x: e.nativeEvent.offsetX, y: e.nativeEvent.offsetY });
+    drawStroke(strokeRef.current);
+  }
+  function endDraw() {
+    if (!drawingRef.current || !strokeRef.current) return;
+    socketRef.current?.emit("wb-draw", { roomId, stroke: strokeRef.current });
+    const saved = localStorage.getItem("wb-autosave");
+    const strokes: Stroke[] = saved ? JSON.parse(saved) : [];
+    strokes.push(strokeRef.current);
+    localStorage.setItem("wb-autosave", JSON.stringify(strokes));
+    drawingRef.current = false;
+    strokeRef.current = null;
+  }
 
-        pc.ontrack = event => {
-            if (remoteVideoRef.current) {
-                remoteVideoRef.current.srcObject = event.streams[0];
-            }
-        }
+  function drawStroke(stroke: Stroke) {
+    const c = canvasRef.current; if (!c) return;
+    const ctx = c.getContext("2d")!;
+    ctx.strokeStyle = stroke.color; ctx.lineWidth = stroke.size;
+    ctx.beginPath();
+    const pts = stroke.points;
+    if (pts.length < 2) return;
+    ctx.moveTo(pts[0].x, pts[0].y);
+    for (let i = 1; i < pts.length; i++) ctx.lineTo(pts[i].x, pts[i].y);
+    ctx.stroke();
+  }
 
-        pc.onicecandidate = event => {
-            if (event.candidate && targetSocketRef.current) {
-                socketRef.current?.emit('ice-candidate', {
-                    target: targetSocketRef.current,
-                    candidate: event.candidate
-                });
-            }
-        }
+  function clearCanvas() {
+    const c = canvasRef.current; if (!c) return;
+    c.getContext("2d")!.clearRect(0, 0, c.width, c.height);
+    socketRef.current?.emit("wb-clear", { roomId });
+    localStorage.removeItem("wb-autosave");
+  }
 
-        for (const c of bufferedIceRef.current) {
-            await pc.addIceCandidate(new RTCIceCandidate(c));
-        }
-        bufferedIceRef.current = [];
+  function formatDate(ts: number) {
+    const d = new Date(ts); const now = new Date();
+    if (d.toDateString() === now.toDateString()) return d.toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' });
+    const yesterday = new Date(now); yesterday.setDate(now.getDate() - 1);
+    if (d.toDateString() === yesterday.toDateString()) return "Yesterday " + d.toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' });
+    return d.toDateString() + " " + d.toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' });
+  }
 
-        if (isInitiator) {
-            const offer = await pc.createOffer();
-            await pc.setLocalDescription(offer);
+  function startDragWB(e: React.MouseEvent) { dragRef.current.dragging = true; dragRef.current.offsetX = e.clientX - wbPosition.x; dragRef.current.offsetY = e.clientY - wbPosition.y; window.addEventListener("mousemove", dragWB); window.addEventListener("mouseup", stopDragWB); }
+  function dragWB(e: MouseEvent) { if (!dragRef.current.dragging) return; setWbPosition({ x: e.clientX - dragRef.current.offsetX, y: e.clientY - dragRef.current.offsetY }); }
+  function stopDragWB() { dragRef.current.dragging = false; window.removeEventListener("mousemove", dragWB); window.removeEventListener("mouseup", stopDragWB); }
 
-            socketRef.current?.emit('offer', {
-                target: otherSocketId,
-                sdp: pc.localDescription
-            });
-        }
+  function startResizeWB(e: React.MouseEvent) { resizeRef.current.resizing = true; resizeRef.current.startX = e.clientX; resizeRef.current.startY = e.clientY; resizeRef.current.startW = wbSizeBox.width; resizeRef.current.startH = wbSizeBox.height; window.addEventListener("mousemove", resizeWB); window.addEventListener("mouseup", stopResizeWB); e.stopPropagation(); }
+  function resizeWB(e: MouseEvent) { if (!resizeRef.current.resizing) return; const newW = resizeRef.current.startW + (e.clientX - resizeRef.current.startX); const newH = resizeRef.current.startH + (e.clientY - resizeRef.current.startY); setWbSizeBox({ width: Math.max(300, newW), height: Math.max(200, newH) }); }
+  function stopResizeWB() { resizeRef.current.resizing = false; window.removeEventListener("mousemove", resizeWB); window.removeEventListener("mouseup", stopResizeWB); }
 
-        setStatus('peer-created');
-        setJoined(true);
-    }
+  function hangUp() {
+    socketRef.current?.emit("hang-up");
+  }
 
-    const joinRoom = () => {
-        if (!roomId.trim()) {
-            alert("Boka ho ka be bilkul");
-            return;
-        }
+  // --- NEW: TIME-GROUPED CHAT ---
+  const TIME_WINDOW = 5 * 60 * 1000; // 5 minutes
 
-        if (pcRef.current) {
-            pcRef.current.close();
-            pcRef.current = null;
-        }
-
-        socketRef.current?.emit('join-room', {
-            roomId: roomId.trim()
-        });
-        setStatus('joined');
-    }
-
-    useEffect(() => {
-        return () => {
-            if (pcRef.current) pcRef.current.close();
-
-            if (localStreamRef.current) {
-                localStreamRef.current.getTracks().forEach(track => track.stop());
-
-                socketRef.current?.disconnect();
-            }
-        }
-    }, []);
-
-    return (
-        <div className="h-screen flex flex-col bg-[#181A1B]">
-
-            {/* Body */}
-            <div className="h-[90vh] flex justify-center items-center w-screen p-5">
-                <div className="w-[50%] p-2.5 h-full">
-                    <h1 className="text-[#E2DFDB]">Local</h1>
-                    <video 
-                        className="rounded-md w-full h-full bg-black"
-                        ref={localVideoRef} 
-                        autoPlay 
-                        playsInline 
-                        muted 
-                    />
-                </div>
-                
-                <div className="w-[50%] p-2.5 h-full">
-                    <h1 className="text-[#E2DFDB]">Remote</h1>
-                    <video 
-                        className="rounded-md w-full h-full bg-black"
-                        ref={remoteVideoRef} 
-                        autoPlay 
-                        playsInline 
-                        muted 
-                    />
-                </div>
-            </div>
-            
-            {/* Footer */}
-            <div className="flex justify-center items-center h-[10vh] px-5">
-
-                {/* Info */}
-                <div className="info w-[25%] pl-3.5 text-gray-100">
-                    <span className="font-semibold">Joined at: </span>
-                    <span>{displayTime()}</span>
-                </div>
-
-                {/* Control Buttons */}
-                <div className="controls w-[50%] flex items-center justify-around">
-                    <input 
-                        value={roomId}
-                        onChange={event => setRoomId(event.target.value)}
-                        placeholder="Room ID daal"
-                        style={{ padding: 6 }}
-                    />
-
-                    <button 
-                        onClick={joinRoom}
-                        disabled={joined}
-                        style={{ marginLeft: 6, padding: 6 }}
-                    >
-                        Join / Create
-                    </button>
-
-                    <button
-                        onClick={muteUnmuteAudio}
-                        className="bg-[#464D5A] hover:bg-[#6A7282] h-[5vh] w-[8vh] flex justify-center items-center rounded-md cursor-pointer transition-all duration-300 text-[#E2DFDB]"
-                    >
-                        {
-                            audioEnabled ? <Mic /> : <MicOff />
-                        }
-                    </button>
-
-                    <button
-                        onClick={showHideVideo}
-                        className="bg-[#464D5A] hover:bg-[#6A7282] h-[5vh] w-[8vh] flex justify-center items-center rounded-md cursor-pointer transition-all duration-300 text-[#E2DFDB]"
-                    >
-                        {
-                            videoEnabled ? <Video /> : <VideoOff />
-                        }
-                    </button>
-
-                    <button
-                        onClick={hangUpCall}
-                        className="bg-[#900003] hover:bg-[#E7000B] h-[5vh] w-[8vh] flex justify-center items-center rounded-md cursor-pointer transition-all duration-300  text-[#E2DFDB]"
-                    >
-                        <ImPhoneHangUp />
-                    </button>
-                </div>
-                
-                {/* Utility Buttons */}
-                <div className="w-[25%] flex justify-end items-center pr-3.5 text-[#E2DFDB]">
-                    <LayoutGrid className="mx-5" />
-                    <Presentation className="mx-5" />
-                    <MessageSquare className="mx-5" />
-                </div>
-            </div>
+  return (
+    <div className="flex h-screen bg-gray-900 text-white">
+      {!joined && (
+        <div className="w-64 bg-gray-800 flex flex-col border-r border-gray-700 p-4 space-y-4">
+            <h2 className="text-xl font-bold text-gray-200">Us</h2>
+            <input value={roomId} onChange={e => setRoomId(e.target.value)} placeholder="Room" className="px-3 py-2 rounded bg-gray-700 text-white" />
+            <input value={password} onChange={e => setPassword(e.target.value)} placeholder="Password" type="password" className="px-3 py-2 rounded bg-gray-700 text-white" />
+            <button onClick={join} className="px-4 py-2 rounded bg-blue-600 hover:bg-blue-500 transition">Join</button>
         </div>
-    );
+      )}
+
+      {/* Video */}
+      <div className="flex-1 flex flex-col">
+        <div className="flex-1 flex justify-center items-center gap-4 p-4">
+          <video ref={localVideoRef} autoPlay muted playsInline className="w-1/2 rounded-lg border border-gray-700 shadow-lg" />
+          <video ref={remoteVideoRef} autoPlay playsInline className="w-1/2 rounded-lg border border-gray-700 shadow-lg" />
+        </div>
+
+        {/* Controls */}
+        <div className="p-4 flex justify-center gap-4 bg-gray-800 border-t border-gray-700">
+          <button onClick={toggleAudio} className="px-4 py-2 rounded-full bg-gray-700 hover:bg-gray-600 transition">{audioEnabled ? <Mic /> : <MicOff />}</button>
+          <button onClick={toggleVideo} className="px-4 py-2 rounded-full bg-gray-700 hover:bg-gray-600 transition">{videoEnabled ? <Video /> : <VideoOff />}</button>
+          <button onClick={toggleShare} className="px-4 py-2 rounded-full bg-gray-700 hover:bg-gray-600 transition">{sharing ? <ScreenShareOff /> : <ScreenShare />}</button>
+          <button onClick={() => setWbOpen(!wbOpen)} className="px-4 py-2 rounded-full bg-gray-700 hover:bg-gray-600 transition">{wbOpen ? <SquareX /> : <Presentation />}</button>
+          <button onClick={hangUp} className="px-4 py-2 rounded-full bg-red-600 hover:bg-red-500 transition"><ImPhoneHangUp /></button>
+        </div>
+      </div>
+
+      {/* Chat */}
+      <div className="w-80 bg-gray-800 flex flex-col border-l border-gray-700">
+        <div className="flex-1 p-4 overflow-y-auto space-y-2" ref={chatContainerRef}>
+          {chatLog.map((msg, idx) => {
+            const prevMsg = chatLog[idx - 1];
+            const showTimestamp = !prevMsg || (msg.ts - prevMsg.ts > TIME_WINDOW);
+
+            return (
+              <div key={idx} className="flex flex-col">
+                {showTimestamp && (
+                  <div className="text-xs text-gray-400 text-center mb-1">
+                    {formatDate(msg.ts)}
+                  </div>
+                )}
+                <div className={`flex ${msg.from === "me" ? "justify-end" : "justify-start"}`}>
+                  <div className={`px-3 py-2 rounded-lg max-w-[70%] break-words ${msg.from === "me" ? "bg-blue-500 text-white rounded-br-none" : "bg-gray-700 text-gray-100 rounded-bl-none"}`}>
+                    {msg.text}
+                  </div>
+                </div>
+              </div>
+            );
+          })}
+        </div>
+
+        <div className="p-4 border-t border-gray-700">
+          <input
+            value={chatInput}
+            onChange={e => setChatInput(e.target.value)}
+            onKeyDown={e => { if (e.key === "Enter") sendChat(); }}
+            placeholder="Type a message"
+            className="w-full px-3 py-2 rounded bg-gray-700 text-white focus:outline-none"
+          />
+        </div>
+      </div>
+    </div>
+  );
 }
