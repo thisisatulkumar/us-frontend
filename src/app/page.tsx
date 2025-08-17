@@ -278,7 +278,6 @@ export default function Home() {
     socketRef.current?.emit("hang-up");
   }
 
-  // --- NEW: TIME-GROUPED CHAT ---
   const TIME_WINDOW = 5 * 60 * 1000; // 5 minutes
 
   return (
@@ -343,6 +342,57 @@ export default function Home() {
           />
         </div>
       </div>
+
+      {/* Whiteboard */}
+      {wbOpen && (
+        <div
+            className="absolute bg-gray-900 shadow-2xl rounded-xl border border-gray-700 flex flex-col"
+            style={{
+            top: wbPosition.y,
+            left: wbPosition.x,
+            width: wbSizeBox.width,
+            height: wbSizeBox.height,
+            zIndex: 50
+            }}
+            tabIndex={0} // make div focusable for key events
+            onKeyDown={(e) => { if (e.key === "Escape") setWbOpen(false); }}
+        >
+            {/* Header for drag & close */}
+            <div
+            className="flex justify-between items-center bg-gray-800 px-3 py-2 cursor-move rounded-t-xl select-none"
+            onMouseDown={startDragWB}
+            >
+            <span className="font-bold text-gray-200">Whiteboard</span>
+            
+            {/* Slightly bigger close button */}
+            <button
+                onClick={() => setWbOpen(false)}
+                className="text-red-500 hover:text-red-400 transition font-bold text-2xl"
+            >
+                ×
+            </button>
+            </div>
+
+            {/* Canvas */}
+            <canvas
+            ref={canvasRef}
+            width={wbSizeBox.width}
+            height={wbSizeBox.height - 40}
+            className="flex-1 bg-gray-900 rounded-b-xl"
+            onMouseDown={startDraw}
+            onMouseMove={moveDraw}
+            onMouseUp={endDraw}
+            onMouseLeave={endDraw}
+            />
+
+            {/* Resize handle */}
+            <div
+            className="absolute w-5 h-5 bg-blue-500 bottom-2 right-2 cursor-se-resize rounded-full shadow-lg hover:bg-blue-400 transition"
+            onMouseDown={startResizeWB}
+            />
+        </div>
+        )}
+
     </div>
   );
 }
