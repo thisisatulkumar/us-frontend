@@ -59,57 +59,55 @@ export default function Home() {
     const socket = io(SIGNALING_SERVER);
     socketRef.current = socket;
 
-    socket.on("other-user", (id: string) => { targetSocketRef.current = id; createPeer(true, id); });
+    // someone already in room
+    socket.on("other-user", (id: string) => {
+      targetSocketRef.current = id;
+      if (!pcRef.current) createPeer(true, id); // initiator
+    });
+
     socket.on("offer", async (p: any) => {
       targetSocketRef.current = p.caller;
       if (!pcRef.current) await createPeer(false, p.caller);
-      await pcRef.current!.setRemoteDescription(new RTCSessionDescription(p.sdp));
-      const ans = await pcRef.current!.createAnswer();
-      await pcRef.current!.setLocalDescription(ans);
-      socket.emit("answer", { target: p.caller, sdp: pcRef.current!.localDescription });
+      if (pcRef.current) {
+        await pcRef.current.setRemoteDescription(new RTCSessionDescription(p.sdp));
+
+        // flush ICE candidates that arrived early
+        for (const c of bufferedIceRef.current) await pcRef.current.addIceCandidate(new RTCIceCandidate(c));
+        bufferedIceRef.current = [];
+
+        const ans = await pcRef.current.createAnswer();
+        await pcRef.current.setLocalDescription(ans);
+        socket.emit("answer", { target: p.caller, sdp: pcRef.current.localDescription });
+      }
     });
-    socket.on("answer", async (p: any) => { if (p.sdp && pcRef.current) await pcRef.current.setRemoteDescription(new RTCSessionDescription(p.sdp)); });
+
+    socket.on("answer", async (p: any) => {
+      if (p.sdp && pcRef.current) {
+        await pcRef.current.setRemoteDescription(new RTCSessionDescription(p.sdp));
+        for (const c of bufferedIceRef.current) await pcRef.current.addIceCandidate(new RTCIceCandidate(c));
+        bufferedIceRef.current = [];
+      }
+    });
+
     socket.on("ice-candidate", async (p: any) => {
       if (!p.candidate) return;
       if (pcRef.current) await pcRef.current.addIceCandidate(new RTCIceCandidate(p.candidate));
       else bufferedIceRef.current.push(p.candidate);
     });
 
+    // Chat & whiteboard
     socket.on("chat-message", ({ text, ts }) => pushChat({ from: "peer", text, ts: ts || Date.now() }));
     socket.on("wb-draw", ({ stroke }) => drawStroke(stroke as Stroke));
     socket.on("wb-clear", () => clearCanvas());
 
-    // Peer side: only remove remote stream, keep own AV running
-    socket.on("peer-hang-up", () => {
-    // Remove only remote video from peer
-    if (remoteVideoRef.current) remoteVideoRef.current.srcObject = null;
-
-    // Close peer connection if it exists
-    if (pcRef.current) {
-        pcRef.current.getSenders().forEach(s => {
-        if (s.track && s.track !== localStreamRef.current?.getAudioTracks()[0] &&
-            s.track !== localStreamRef.current?.getVideoTracks()[0]) {
-            s.track.stop();
-        }
-        });
-        pcRef.current.close();
-        pcRef.current = null;
-        targetSocketRef.current = null;
-    }
-
-    // Keep peer’s own local stream running
-    setSharing(false);
-    // Do NOT change setJoined; sidebar state stays as it is
+    // --- Listen for remote hang-up ---
+    socket.on("hang-up", () => {
+      stopEverything();
+      alert("Peer has hung up");
     });
 
-    const saved = localStorage.getItem("wb-autosave");
-    if (saved) {
-      const strokes: Stroke[] = JSON.parse(saved);
-      strokes.forEach(drawStroke);
-    }
-
     return () => {
-        socket.disconnect();
+      socket.disconnect();
     }
   }, []);
 
@@ -138,16 +136,26 @@ export default function Home() {
     const local = await ensureLocalAV();
     local.getTracks().forEach(t => pc.addTrack(t, local));
 
-    pc.ontrack = (e) => { if (remoteVideoRef.current) remoteVideoRef.current.srcObject = e.streams[0]; };
-    pc.onicecandidate = (e) => { if (e.candidate && targetSocketRef.current) socketRef.current?.emit("ice-candidate", { target: targetSocketRef.current, candidate: e.candidate }); };
+    pc.ontrack = (e) => {
+      if (remoteVideoRef.current) remoteVideoRef.current.srcObject = e.streams[0];
+    };
 
+    pc.onicecandidate = (e) => {
+      if (e.candidate && targetSocketRef.current) {
+        socketRef.current?.emit("ice-candidate", { target: targetSocketRef.current, candidate: e.candidate });
+      }
+    };
+
+    // Flush any ICE candidates that arrived early
     for (const c of bufferedIceRef.current) await pc.addIceCandidate(new RTCIceCandidate(c));
     bufferedIceRef.current = [];
 
     if (initiator) {
-      const offer = await pc.createOffer(); await pc.setLocalDescription(offer);
+      const offer = await pc.createOffer();
+      await pc.setLocalDescription(offer);
       socketRef.current?.emit("offer", { target: otherId, sdp: pc.localDescription, caller: socketRef.current.id });
     }
+
     setJoined(true);
   }
 
@@ -174,30 +182,33 @@ export default function Home() {
 
   async function toggleShare() {
     if (!pcRef.current) return;
-    if (sharing) { await revertToCam(); setSharing(false); return; }
+
+    if (sharing) {
+      await revertToCam();
+      return;
+    }
+
     try {
-      const screen = await navigator.mediaDevices.getDisplayMedia({
-        video: true,
-        audio: { echoCancellation: true }
-      });
-
+      const screen = await navigator.mediaDevices.getDisplayMedia({ video: true, audio: true });
       screenStreamRef.current = screen;
-      const screenTrack = screen.getVideoTracks()[0];
 
-      const sender = pcRef.current.getSenders().find(s => s.track?.kind === "video");
-      if (sender) await sender.replaceTrack(screenTrack);
-
+      const videoTrack = screen.getVideoTracks()[0];
       const audioTrack = screen.getAudioTracks()[0];
-      if (audioTrack) {
-        const audioSender = pcRef.current.getSenders().find(s => s.track?.kind === "audio");
-        if (audioSender) await audioSender.replaceTrack(audioTrack);
-      }
+
+      const videoSender = pcRef.current.getSenders().find(s => s.track?.kind === "video");
+      if (videoSender && videoTrack) await videoSender.replaceTrack(videoTrack);
+
+      const audioSender = pcRef.current.getSenders().find(s => s.track?.kind === "audio");
+      if (audioSender && audioTrack) await audioSender.replaceTrack(audioTrack);
 
       if (localVideoRef.current) localVideoRef.current.srcObject = screen;
 
-      screenTrack.onended = async () => { await revertToCam(); setSharing(false); };
-      setSharing(true);
+      // Listen for manual stop from Chrome UI
+      screenStreamRef.current.getTracks().forEach(track => {
+        track.onended = () => revertToCam();
+      });
 
+      setSharing(true);
     } catch (err) {
       console.error(err);
       alert("Screen share failed: audio might not be supported on this browser");
@@ -206,11 +217,24 @@ export default function Home() {
 
   async function revertToCam() {
     if (!pcRef.current) return;
+
+    // Stop screen share tracks if active
+    screenStreamRef.current?.getTracks().forEach(t => t.stop());
+    screenStreamRef.current = null;
+
     const camStream = await ensureLocalAV();
     const camTrack = camStream.getVideoTracks()[0];
-    const sender = pcRef.current.getSenders().find(s => s.track?.kind === "video");
-    if (sender) await sender.replaceTrack(camTrack);
+    const audioTrack = camStream.getAudioTracks()[0];
+
+    const videoSender = pcRef.current.getSenders().find(s => s.track?.kind === "video");
+    if (videoSender && camTrack) await videoSender.replaceTrack(camTrack);
+
+    const audioSender = pcRef.current.getSenders().find(s => s.track?.kind === "audio");
+    if (audioSender && audioTrack) await audioSender.replaceTrack(audioTrack);
+
     if (localVideoRef.current) localVideoRef.current.srcObject = camStream;
+
+    setSharing(false);
   }
 
   function sendChat() { 
@@ -280,41 +304,50 @@ export default function Home() {
   function resizeWB(e: MouseEvent) { if (!resizeRef.current.resizing) return; const newW = resizeRef.current.startW + (e.clientX - resizeRef.current.startX); const newH = resizeRef.current.startH + (e.clientY - resizeRef.current.startY); setWbSizeBox({ width: Math.max(300, newW), height: Math.max(200, newH) }); }
   function stopResizeWB() { resizeRef.current.resizing = false; window.removeEventListener("mousemove", resizeWB); window.removeEventListener("mouseup", stopResizeWB); }
 
+  // --- New nuclear hang-up ---
   function hangUp() {
-  socketRef.current?.emit("hang-up");
+    if (!joined) return;
+    socketRef.current?.emit("hang-up", { target: targetSocketRef.current });
+    stopEverything();
+  }
 
-  // Stop/close peer connection if it exists
-  if (pcRef.current) {
-    pcRef.current.getSenders().forEach(s => { 
-      if (s.track && s.track !== localStreamRef.current?.getAudioTracks()[0] && s.track !== localStreamRef.current?.getVideoTracks()[0]) {
-        s.track.stop();
-      }
-    });
-    pcRef.current.close();
-    pcRef.current = null;
+  function stopEverything() {
+    // Stop peer connection
+    if (pcRef.current) {
+      pcRef.current.getSenders().forEach(s => s.track?.stop());
+      pcRef.current.close();
+      pcRef.current = null;
+    }
+
+    // Stop local camera/audio
+    if (localStreamRef.current) {
+      localStreamRef.current.getTracks().forEach(t => t.stop());
+      localStreamRef.current = null;
+    }
+
+    // Stop screen share
+    if (screenStreamRef.current) {
+      screenStreamRef.current.getTracks().forEach(t => t.stop());
+      screenStreamRef.current = null;
+    }
+
+    // Stop remote video tracks
+    if (remoteVideoRef.current?.srcObject) {
+      (remoteVideoRef.current.srcObject as MediaStream).getTracks().forEach(t => t.stop());
+      remoteVideoRef.current.srcObject = null;
+    }
+
+    // Reset local video ref
+    if (localVideoRef.current) localVideoRef.current.srcObject = null;
+
+    // Reset UI states
+    setJoined(false);
+    setAudioEnabled(true);
+    setVideoEnabled(true);
+    setSharing(false);
+    bufferedIceRef.current = [];
     targetSocketRef.current = null;
   }
-
-  // Stop any screen share tracks
-  screenStreamRef.current?.getTracks().forEach(t => t.stop());
-  screenStreamRef.current = null;
-
-  // Restore own camera/audio
-  if (localVideoRef.current && localStreamRef.current) {
-    localVideoRef.current.srcObject = localStreamRef.current;
-  }
-
-  // Clear remote video
-  if (remoteVideoRef.current) remoteVideoRef.current.srcObject = null;
-
-  // Reset UI states for sidebar and buttons
-  setJoined(false);      // sidebar will appear correctly
-  setAudioEnabled(true);
-  setVideoEnabled(true);
-  setSharing(false);
-}
-
-
 
   const TIME_WINDOW = 5 * 60 * 1000; // 5 minutes
 
@@ -429,7 +462,7 @@ export default function Home() {
             onMouseDown={startResizeWB}
             />
         </div>
-        )}
+      )}
 
     </div>
   );
