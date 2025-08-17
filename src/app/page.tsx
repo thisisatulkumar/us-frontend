@@ -355,10 +355,6 @@ async function createPeer(initiator: boolean, otherId: string) {
   function dragWB(e: MouseEvent) { if (!dragRef.current.dragging) return; setWbPosition({ x: e.clientX - dragRef.current.offsetX, y: e.clientY - dragRef.current.offsetY }); }
   function stopDragWB() { dragRef.current.dragging = false; window.removeEventListener("mousemove", dragWB); window.removeEventListener("mouseup", stopDragWB); }
 
-  function startResizeWB(e: React.MouseEvent) { resizeRef.current.resizing = true; resizeRef.current.startX = e.clientX; resizeRef.current.startY = e.clientY; resizeRef.current.startW = wbSizeBox.width; resizeRef.current.startH = wbSizeBox.height; window.addEventListener("mousemove", resizeWB); window.addEventListener("mouseup", stopResizeWB); e.stopPropagation(); }
-  function resizeWB(e: MouseEvent) { if (!resizeRef.current.resizing) return; const newW = resizeRef.current.startW + (e.clientX - resizeRef.current.startX); const newH = resizeRef.current.startH + (e.clientY - resizeRef.current.startY); setWbSizeBox({ width: Math.max(300, newW), height: Math.max(200, newH) }); }
-  function stopResizeWB() { resizeRef.current.resizing = false; window.removeEventListener("mousemove", resizeWB); window.removeEventListener("mouseup", stopResizeWB); }
-
   // --- New nuclear hang-up ---
   function hangUp() {
     if (!joined) return;
@@ -509,12 +505,6 @@ async function createPeer(initiator: boolean, otherId: string) {
             onMouseMove={moveDraw}
             onMouseUp={endDraw}
             onMouseLeave={endDraw}
-            />
-
-            {/* Resize handle */}
-            <div
-            className="absolute w-5 h-5 bg-blue-500 bottom-2 right-2 cursor-se-resize rounded-full shadow-lg hover:bg-blue-400 transition"
-            onMouseDown={startResizeWB}
             />
         </div>
       )}
