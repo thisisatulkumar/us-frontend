@@ -79,24 +79,30 @@ export default function Home() {
     socket.on("wb-draw", ({ stroke }) => drawStroke(stroke as Stroke));
     socket.on("wb-clear", () => clearCanvas());
 
-    socket.on("peer-hang-up", () => {
-      if (pcRef.current) {
-        pcRef.current.getSenders().forEach(s => {
-          if (s.track?.kind !== "audio" && s.track?.kind !== "video") return;
-          if (s.track) s.track.stop();
-        });
-        pcRef.current.close();
-      }
-      pcRef.current = null;
-      targetSocketRef.current = null;
+    // Peer side: only remove remote stream, keep own AV running
+socket.on("peer-hang-up", () => {
+  // Remove only remote video from peer
+  if (remoteVideoRef.current) remoteVideoRef.current.srcObject = null;
 
-      if (localVideoRef.current && localStreamRef.current) {
-        localVideoRef.current.srcObject = localStreamRef.current;
-      }
-      if (remoteVideoRef.current) {
-        remoteVideoRef.current.srcObject = null;
+  // Close peer connection if it exists
+  if (pcRef.current) {
+    pcRef.current.getSenders().forEach(s => {
+      if (s.track && s.track !== localStreamRef.current?.getAudioTracks()[0] &&
+          s.track !== localStreamRef.current?.getVideoTracks()[0]) {
+        s.track.stop();
       }
     });
+    pcRef.current.close();
+    pcRef.current = null;
+    targetSocketRef.current = null;
+  }
+
+  // Keep peer’s own local stream running
+  setSharing(false);
+  // Do NOT change setJoined; sidebar state stays as it is
+});
+
+
 
     const saved = localStorage.getItem("wb-autosave");
     if (saved) {
@@ -275,8 +281,40 @@ export default function Home() {
   function stopResizeWB() { resizeRef.current.resizing = false; window.removeEventListener("mousemove", resizeWB); window.removeEventListener("mouseup", stopResizeWB); }
 
   function hangUp() {
-    socketRef.current?.emit("hang-up");
+  socketRef.current?.emit("hang-up");
+
+  // Stop/close peer connection if it exists
+  if (pcRef.current) {
+    pcRef.current.getSenders().forEach(s => { 
+      if (s.track && s.track !== localStreamRef.current?.getAudioTracks()[0] && s.track !== localStreamRef.current?.getVideoTracks()[0]) {
+        s.track.stop();
+      }
+    });
+    pcRef.current.close();
+    pcRef.current = null;
+    targetSocketRef.current = null;
   }
+
+  // Stop any screen share tracks
+  screenStreamRef.current?.getTracks().forEach(t => t.stop());
+  screenStreamRef.current = null;
+
+  // Restore own camera/audio
+  if (localVideoRef.current && localStreamRef.current) {
+    localVideoRef.current.srcObject = localStreamRef.current;
+  }
+
+  // Clear remote video
+  if (remoteVideoRef.current) remoteVideoRef.current.srcObject = null;
+
+  // Reset UI states for sidebar and buttons
+  setJoined(false);      // sidebar will appear correctly
+  setAudioEnabled(true);
+  setVideoEnabled(true);
+  setSharing(false);
+}
+
+
 
   const TIME_WINDOW = 5 * 60 * 1000; // 5 minutes
 
