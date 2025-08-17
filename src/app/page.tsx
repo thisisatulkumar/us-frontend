@@ -67,6 +67,15 @@ export default function Home() {
   const socket = io(SIGNALING_SERVER);
   socketRef.current = socket;
 
+  // --- Add this inside your existing useEffect where socket is defined ---
+socket.on("chat-message", (data: { text: string; ts: number }) => {
+    setChatLog(prev => [...prev, { from: "peer", text: data.text, ts: data.ts }]);
+    setTimeout(() => {
+        chatContainerRef.current?.scrollTo({ top: chatContainerRef.current.scrollHeight, behavior: "smooth" });
+    }, 50);
+});
+
+
   // Join room handling
   socket.on("other-user", (id: string) => {
     console.log("Other user in room:", id);
